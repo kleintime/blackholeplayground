@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Black Hole Playground — Particle Infall (Working)</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #000;
+      --fg: #eaeaea;
+      --muted: #a0a0a0;
+      --panel: rgba(255,255,255,0.06);
+      --panel-border: rgba(255,255,255,0.12);
+      --btn: rgba(255,255,255,0.1);
+      --btn-hover: rgba(255,255,255,0.18);
+      --accent: #7bdcff;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+      font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+    .wrap { max-width: 1120px; margin: 22px auto; padding: 0 16px; }
+    h1 { font-size: 24px; margin: 0 0 8px 0; }
+    p.sub { margin: 0 0 16px 0; color: var(--muted); }
+    .card { border: 1px solid var(--panel-border); border-radius: 16px; overflow: hidden; background: var(--panel); position: relative; }
+    canvas { display: block; width: 100%; height: auto; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 14px; }
+    .control { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px; }
+    .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    button { background: var(--btn); color: var(--fg); border: 1px solid var(--panel-border); padding: 8px 12px; border-radius: 10px; cursor: pointer; }
+    button:hover { background: var(--btn-hover); }
+    .foot { color: var(--muted); font-size: 12px; margin-top: 14px; }
+    .small { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .tog { display: flex; align-items: center; gap: 8px; }
+    input[type="range"] { width: 100%; }
+    .badge {
+      position: absolute; top: 8px; right: 12px; background: rgba(0,0,0,0.5);
+      border: 1px solid var(--panel-border); color: var(--muted); padding: 4px 8px; border-radius: 999px; font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Black Hole Playground</h1>
+    <p class="sub">
+      Click the canvas to spawn a test particle. Motion uses the <b>Paczyński–Wiita</b> pseudo‑Newtonian potential (fast GR‑like).
+      The disk spins by default. A particle is auto‑spawned on load with sub‑circular speed so it <i>spirals in</i>.
+    </p>
+
+    <div class="card">
+      <div class="badge">Click to spawn • Spacebar = pause</div>
+      <canvas id="view" width="1000" height="640"></canvas>
+    </div>
+
+    <div class="grid">
+      <div class="control">
+        <div class="label" id="labMass">Mass (visual Rₛ)</div>
+        <input id="mass" type="range" min="1" max="12" step="0.1" value="5" />
+      </div>
+      <div class="control">
+        <div class="label" id="labSpin">Spin (dimensionless a*)</div>
+        <input id="spin" type="range" min="0" max="0.99" step="0.01" value="0.6" />
+      </div>
+      <div class="control">
+        <div class="label" id="labBright">Accretion disk brightness</div>
+        <input id="bright" type="range" min="0" max="1" step="0.01" value="0.85" />
+      </div>
+      <div class="control">
+        <div class="label" id="labSpeed">Disk angular speed</div>
+        <input id="speed" type="range" min="0" max="1" step="0.01" value="0.5" />
+      </div>
+      <div class="control">
+        <div class="label" id="labInc">View inclination (deg)</div>
+        <input id="inc" type="range" min="0" max="89" step="1" value="65" />
+      </div>
+
+      <!-- Particle controls -->
+      <div class="control">
+        <div class="label" id="labSpawn">Spawn speed (% of circular)</div>
+        <input id="spawn" type="range" min="10" max="180" step="1" value="85" />
+        <div class="row" style="margin-top:8px;">
+          <button id="presetCircular">Preset: circular @ 3 Rₛ</button>
+          <button id="presetEcc">Preset: eccentric @ 4 Rₛ</button>
+          <button id="presetPlunge">Preset: plunge @ 2.2 Rₛ</button>
+        </div>
+        <div style="margin-top:6px; color: var(--muted); font-size:12px;">Tip: Click anywhere to spawn at that radius with the speed set here.</div>
+      </div>
+
+      <div class="control row">
+        <button id="toggle">{play}</button>
+        <button id="reset">Reset view</button>
+        <button id="clearTrail">Clear trail</button>
+        <label class="tog"><input type="checkbox" id="guides" checked> Show guides</label>
+        <label class="tog"><input type="checkbox" id="stars" checked> Starfield</label>
+        <label class="tog"><input type="checkbox" id="showParticle" checked> Particle</label>
+      </div>
+    </div>
+
+    <div class="foot">
+      ⚠️ <span class="small">Physics:</span> \( \Phi(r)=-GM/(r-R_s)\) with \(R_s=2GM\) (set \(c=1\)).
+      Reproduces GR‑like ISCO at \(3R_s\) with far less compute than full geodesics.
+    </div>
+  </div>
+
+<script>
+(() => {
+  const TAU = Math.PI * 2;
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const lerp = (a,b,t) => a + (b - a) * t;
+  const hsla = (h,s,l,a=1)=>`hsla(${h}, ${s}%, ${l}%, ${a})`;
+
+  const canvas = document.getElementById('view');
+  const ctx = canvas.getContext('2d');
+  let w = canvas.width, h = canvas.height;
+
+  // State
+  const state = {
+    paused: false,
+    mass: 5,
+    spin: 0.6,
+    bright: 0.85,
+    speed: 0.5,
+    incDeg: 65,
+    guides: true,
+    stars: true,
+    showParticle: true,
+    spawnPct: 85, // default sub-circular so it falls in
+    t: 0
+  };
+
+  // Particle (PW potential) in *dimensionless* units where Rs = 1
+  // Mapping: r_sim = r_px / Rs_px
+  const particle = {
+    alive: false,
+    x: 0, y: 0, vx: 0, vy: 0,
+    trail: []
+  };
+  const GM = 0.5;   // Rs = 2GM -> GM = 0.5 when Rs=1
+  const RsSim = 1;  // horizon in sim units
+  let RsPx = 70;    // visual pixels per Rs (tied to mass/slider)
+
+  // UI
+  const E = id => document.getElementById(id);
+  const labMass = E('labMass');
+  const labSpin = E('labSpin');
+  const labBright = E('labBright');
+  const labSpeed = E('labSpeed');
+  const labInc = E('labInc');
+  const labSpawn = E('labSpawn');
+
+  function syncLabels() {
+    labMass.textContent  = `Mass (visual Rₛ): ${state.mass.toFixed(1)}×`;
+    labSpin.textContent  = `Spin (dimensionless a*): ${state.spin.toFixed(2)}`;
+    labBright.textContent= `Accretion disk brightness: ${(state.bright*100)|0}%`;
+    labSpeed.textContent = `Disk angular speed: ${(state.speed*100)|0}%`;
+    labInc.textContent   = `View inclination (deg): ${state.incDeg}`;
+    labSpawn.textContent = `Spawn speed (% of circular): ${state.spawnPct}%`;
+    E('toggle').textContent = state.paused ? 'Play' : 'Pause';
+  }
+
+  E('mass').addEventListener('input', e => { state.mass=parseFloat(e.target.value); syncLabels(); });
+  E('spin').addEventListener('input', e => { state.spin=parseFloat(e.target.value); syncLabels(); });
+  E('bright').addEventListener('input', e => { state.bright=parseFloat(e.target.value); syncLabels(); });
+  E('speed').addEventListener('input', e => { state.speed=parseFloat(e.target.value); syncLabels(); });
+  E('inc').addEventListener('input', e => { state.incDeg=parseInt(e.target.value,10); syncLabels(); });
+  E('guides').addEventListener('change', e => state.guides = e.target.checked);
+  E('stars').addEventListener('change', e => state.stars = e.target.checked);
+  E('showParticle').addEventListener('change', e => state.showParticle = e.target.checked);
+  E('spawn').addEventListener('input', e => { state.spawnPct = parseInt(e.target.value,10); syncLabels(); });
+  E('toggle').addEventListener('click', () => { state.paused = !state.paused; syncLabels(); });
+  E('reset').addEventListener('click', () => {
+    Object.assign(state, { mass:5, spin:0.6, bright:0.85, speed:0.5, incDeg:65, guides:true, stars:true, showParticle:true, spawnPct:85 });
+    E('mass').value = state.mass;
+    E('spin').value = state.spin;
+    E('bright').value = state.bright;
+    E('speed').value = state.speed;
+    E('inc').value = state.incDeg;
+    E('guides').checked = state.guides;
+    E('stars').checked = state.stars;
+    E('showParticle').checked = state.showParticle;
+    E('spawn').value = state.spawnPct;
+    clearTrail();
+    // also respawn
+    autoSpawn();
+    syncLabels();
+  });
+  E('clearTrail').addEventListener('click', () => clearTrail());
+
+  // Presets
+  E('presetCircular').addEventListener('click', () => { spawnAtRadius(3 * RsPx, 100); });
+  E('presetEcc').addEventListener('click', () => { spawnAtRadius(4 * RsPx, 80); });
+  E('presetPlunge').addEventListener('click', () => { spawnAtRadius(2.2 * RsPx, 50); });
+
+  // Spawn by clicking the canvas
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const dx = x - w*0.5, dy = y - h*0.5;
+    spawnAtPoint(dx, dy, state.spawnPct);
+  });
+
+  // Keyboard pause
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { state.paused = !state.paused; syncLabels(); e.preventDefault(); }
+  });
+
+  function clearTrail() { particle.trail.length = 0; }
+
+  function spawnAtRadius(rpx, pct=100) { spawnAtPoint(rpx, 0, pct); }
+
+  function spawnAtPoint(dx, dy, pct=100) {
+    const cx = w*0.5, cy = h*0.5;
+    particle.x = cx + dx;
+    particle.y = cy + dy;
+    const rpx = Math.hypot(dx, dy);
+    const rs = rpx / RsPx; // sim units
+    // Circular speed in PW: v_c = sqrt(r * dPhi/dr) with dPhi/dr = GM/(r-Rs)^2
+    const vc = Math.sqrt(rs * GM) / (rs - 1);
+    // Perpendicular unit vector (rotate radial by +90°)
+    const ux = -dy / rpx, uy = dx / rpx;
+    const k = pct / 100;
+    const v = k * vc;
+    particle.vx = v * ux * RsPx;
+    particle.vy = v * uy * RsPx;
+    // small inward nudge so sub-circular ones spiral in nicely
+    const nx = -dx / rpx, ny = -dy / rpx;
+    particle.vx += nx * 0.05 * RsPx * (1 - k);
+    particle.vy += ny * 0.05 * RsPx * (1 - k);
+
+    particle.alive = true;
+    clearTrail();
+  }
+
+  // Stars
+  function buildStars(seed, count, w, h) {
+    const stars = [];
+    let x = seed | 0;
+    const rand = () => (x = (x * 1664525 + 1013904223) >>> 0) / 4294967296;
+    for (let i = 0; i < count; i++) {
+      stars.push({ x: rand() * w, y: rand() * h, r: rand() * 1.2 + 0.3, a: rand() * 0.6 + 0.4 });
+    }
+    return stars;
+  }
+  const stars = buildStars(42, 800, w, h);
+
+  // Draw loop
+  let raf;
+  function draw() {
+    if (!state.paused) state.t += 0.016 * (0.5 + state.speed * 1.5);
+    const t = state.t;
+
+    // Visual Rs in pixels tied to mass
+    RsPx = 20 + state.mass * 10;
+
+    // Background gradient
+    const g = ctx.createRadialGradient(w*0.5, h*0.5, 10, w*0.5, h*0.5, Math.max(w,h)*0.7);
+    g.addColorStop(0, '#03030a'); g.addColorStop(1, '#000');
+    ctx.fillStyle = g; ctx.fillRect(0,0,w,h);
+
+    // Stars
+    if (state.stars) {
+      ctx.save();
+      for (const s of stars) {
+        ctx.globalAlpha = s.a;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Center + scales
+    const cx = w * 0.5, cy = h * 0.5;
+    const Rs = RsPx;                                   // event horizon radius in pixels
+    const photonRing = Rs * (1.5 + 0.6 * (1 - state.spin));
+    const inc = state.incDeg * Math.PI / 180;
+    const diskInner = Rs * (1.2 - 0.5 * state.spin);
+    const diskOuter = Rs * 4.2;
+
+    // Lens bloom
+    ctx.save();
+    const bloom = ctx.createRadialGradient(cx, cy, Rs*0.9, cx, cy, photonRing*1.4);
+    bloom.addColorStop(0, 'rgba(0,0,0,0)');
+    bloom.addColorStop(0.65, 'rgba(255,255,255,0.03)');
+    bloom.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = bloom;
+    ctx.beginPath(); ctx.arc(cx, cy, photonRing*1.5, 0, TAU); ctx.fill();
+    ctx.restore();
+
+    // Accretion disk (elliptical rings + Doppler/beaming tint)
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(0.2 * Math.sin(t * 0.1));
+    const cosInc = Math.cos(inc);
+
+    const steps = 240, rings = 18;
+    for (let i = 0; i < steps; i++) {
+      const a0 = (i / steps) * TAU;
+      const a1 = ((i + 1) / steps) * TAU;
+      for (let j = 0; j < rings; j++) {
+        const r0 = lerp(diskInner, diskOuter, j / rings);
+        const r1 = lerp(diskInner, diskOuter, (j + 1) / rings);
+
+        const x0 = r0 * Math.cos(a0), y0 = r0 * Math.sin(a0) * cosInc;
+        const x1 = r1 * Math.cos(a0), y1 = r1 * Math.sin(a0) * cosInc;
+        const x2 = r1 * Math.cos(a1), y2 = r1 * Math.sin(a1) * cosInc;
+        const x3 = r0 * Math.cos(a1), y3 = r0 * Math.sin(a1) * cosInc;
+
+        const beta = Math.max(0, Math.min(0.88, 0.35 + 0.35 * (1 - j / rings) + state.spin * 0.2));
+        const viewCos = Math.cos(a0 - t * (1.2 + state.spin * 0.8));
+        const doppler = (1 + beta * viewCos) / Math.sqrt(1 - beta * beta);
+        const heat = 1 - j / rings;
+
+        const blueHue = 210, redHue = 10, baseHue = 45;
+        const hue = doppler > 1
+          ? lerp(baseHue, blueHue, Math.max(0, Math.min(1, (doppler - 1) * 1.6)))
+          : lerp(baseHue, redHue,  Math.max(0, Math.min(1, (1 - doppler) * 1.6)));
+        const alpha = 0.06 + 0.7 * state.bright * heat;
+
+        ctx.fillStyle = hsla(hue, 90, 55 - 20 * (1 - heat), alpha);
+        ctx.beginPath();
+        ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.lineTo(x2,y2); ctx.lineTo(x3,y3);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    ctx.restore();
+
+    // Photon ring
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,255,255,${0.25 + 0.35 * (1 - state.spin)})`;
+    ctx.lineWidth = Math.max(1, Rs * 0.05);
+    ctx.beginPath(); ctx.arc(cx, cy, photonRing, 0, TAU); ctx.stroke();
+    ctx.restore();
+
+    // Event horizon
+    ctx.save();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(cx, cy, Rs, 0, TAU); ctx.fill();
+    const eg = ctx.createRadialGradient(cx, cy, Rs*0.95, cx, cy, Rs*1.35);
+    eg.addColorStop(0, 'rgba(255,255,255,0)');
+    eg.addColorStop(1, 'rgba(255,255,255,0.08)');
+    ctx.fillStyle = eg; ctx.beginPath(); ctx.arc(cx, cy, Rs*1.35, 0, TAU); ctx.fill();
+    ctx.restore();
+
+    // Guides
+    if (state.guides) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.setLineDash([4,6]);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cx, cy, Rs, 0, TAU); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, photonRing, 0, TAU); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      ctx.font = '12px ui-monospace, SFMono-Regular, Menlo';
+      ctx.fillText('Event Horizon (Rₛ)', cx + Rs + 8, cy - 6);
+      ctx.fillText('Photon Ring (~1.5 Rₛ)', cx + photonRing + 8, cy + 14);
+      ctx.restore();
+    }
+
+    // Particle simulation & draw
+    if (state.showParticle) {
+      stepParticle();
+      drawParticle();
+    }
+
+    raf = requestAnimationFrame(draw);
+  }
+  draw();
+
+  function stepParticle() {
+    if (!particle.alive || state.paused) return;
+
+    const cx = w*0.5, cy = h*0.5;
+    const x = particle.x - cx;
+    const y = particle.y - cy;
+    const rpx = Math.hypot(x, y);
+    if (rpx <= RsPx * 1.01) { // swallowed
+      particle.alive = false;
+      return;
+    }
+
+    // Semi-implicit Euler for stability
+    const dt = 0.016;
+    // PW acceleration in px-units
+    const rs = rpx / RsPx;
+    const a_mag_sim = - 0.5 / Math.pow((rs - 1), 2); // GM=0.5
+    const a_mag_px = a_mag_sim * RsPx;
+    const ax = a_mag_px * (x / rpx);
+    const ay = a_mag_px * (y / rpx);
+
+    particle.vx += ax * dt;
+    particle.vy += ay * dt;
+    particle.x += particle.vx * dt;
+    particle.y += particle.vy * dt;
+
+    if (particle.trail.length > 600) particle.trail.shift();
+    particle.trail.push({ x: particle.x, y: particle.y });
+  }
+
+  function drawParticle() {
+    const cx = w*0.5, cy = h*0.5;
+    if (particle.trail.length > 1) {
+      ctx.save();
+      for (let i = 1; i < particle.trail.length; i++) {
+        const p0 = particle.trail[i-1];
+        const p1 = particle.trail[i];
+        const a = i / particle.trail.length;
+        ctx.strokeStyle = `rgba(123, 220, 255, ${a*0.5})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.lineTo(p1.x, p1.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    if (!particle.alive) return;
+
+    // redshift/dilation cue
+    const rpx = Math.hypot(particle.x - cx, particle.y - cy);
+    const rs = rpx / RsPx;
+    const dilation = Math.sqrt(Math.max(0.0, 1 - 1/rs));
+    const size = 5 + 6 * (1 - dilation);
+    ctx.save();
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(particle.x, particle.y, size*0.5, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(123,220,255,${0.8 * (0.4 + 0.6*dilation)})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(particle.x, particle.y, size*0.5 + 1.5, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function autoSpawn() {
+    // set RsPx to current mass mapping and spawn at ~3.2 Rs with 85% circular
+    RsPx = 20 + state.mass * 10;
+    spawnAtRadius(3.2 * RsPx, state.spawnPct);
+  }
+
+  // Resize observer (no buffer resize to keep perf stable)
+  const ro = new ResizeObserver(() => {});
+  ro.observe(canvas);
+
+  syncLabels();
+  // Auto-spawn default particle for spiral-in
+  autoSpawn();
+})();
+</script>
+</body>
+</html>
